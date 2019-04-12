@@ -1,0 +1,267 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require('../app');
+var debug = require('debug')('chotinh:server');
+var http = require('http');
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+var io = require('socket.io')(server);
+var connectedUsers = [];
+var availabeUsers = [];
+var choosing = []; /* initially, choosing[ i ] = false */
+var num = []; /* initially, num[ i ] = 0 */
+
+const getRandomPartner = (availabeUsers) => {
+  if (availabeUsers.length == 0) {
+    return -1;
+  }
+  return availabeUsers.length - 1;
+}
+
+const getSocket = (userID, array) => {
+  for (var i = 0; i < array.length; i++) {
+    if (array[i].id === userID) {
+      return array[i].socket;
+
+    }
+  }
+}
+
+//param1 : key of element to remove(let null if no need)
+//param2: value of element to remove
+//param3: array containt value
+const removeElement = (key, value, array) => {
+  for (i = 0; i < array.length; i++) {
+    if (array[i] === value) {
+      array.splice(array[i], 1);
+    }
+    else if (eval(`array[${i}].${key}`) === value) {
+      array.splice(array[i], 1);
+    }
+  }
+  return array;
+}
+
+app.get('/', function (req, res) {
+  res.sendFile(__dirname + '/index.html');
+});
+
+io.on('connection', function (socket) {
+
+  console.log('new user connected')
+  let users = {
+    id: socket.id,
+    socket: socket
+  }
+  connectedUsers.push(users);
+
+  socket.on('chat message', function (msg) {
+    io.emit('chat message', msg);
+  });
+
+
+
+  //find partner
+  socket.on('findPartner', function (criteria) {
+    console.log('list avai users: ' + availabeUsers)
+    let partnerIndex = getRandomPartner(availabeUsers);
+
+    //no available users -> add users to array
+    if (partnerIndex == -1) {
+      availabeUsers.push(socket.id);
+      socket.emit('finding');
+    }
+    else if (availabeUsers[partnerIndex] === socket.id) {
+      console.log('bang id nhau')
+      socket.emit('finding');
+    }
+    else {
+      socket.emit('found', {
+        myID: socket.id,
+        partnerID: availabeUsers[partnerIndex]
+      })
+
+
+      //notify waiting user that he has a partner
+      let partnerSocket = getSocket(availabeUsers[partnerIndex], connectedUsers);
+      try {
+        partnerSocket.emit('found', {
+          myID: availabeUsers[partnerIndex],
+          partnerID: socket.id
+        })
+      } catch (error) {
+
+      }
+
+
+      availabeUsers.splice(availabeUsers[partnerIndex], 1);
+    }
+
+
+  });
+
+  socket.on('sendMessage', (data) => {
+    try {
+      let receiverSocket = getSocket(data.to, connectedUsers);
+      receiverSocket.emit('chat message', {
+        message: data.message
+      })
+    } catch (error) {
+      socket.emit('error');
+    }
+
+  })
+  //send message to partner
+  socket.on('private_chat', function (data) {
+    const to = data.to,
+      message = data.message;
+
+    if (connectedUsers.hasOwnProperty(to)) {
+      connectedUsers[to].emit('private_chat', {
+        //The sender's username
+        username: socket.username,
+
+        //Message sent to receiver
+        message: message
+      });
+    }
+
+  });
+  socket.on('exit chat', async (data) => {
+    try {
+      console.log('list usesr before exit: ' + availabeUsers)
+
+      let receiverSocket = getSocket(data.partnerID, connectedUsers);
+      receiverSocket.emit('partner exit');
+
+      //push old partner to array if there are noone in array
+      if (availabeUsers.length == 0) {
+        console.log('start push partner id')
+        await availabeUsers.push(data.partnerID);
+      }
+
+
+
+    } catch (error) {
+      console.log('some err in exit chat: ' + error)
+    }
+
+  })
+
+  socket.on('typing', (data) => {
+
+    if (data.typing) {
+      try {
+        let receiverSocket = getSocket(data.to, connectedUsers);
+        receiverSocket.emit('typing');
+      } catch (error) {
+
+      }
+    }
+    else {
+      try {
+        let receiverSocket = getSocket(data.to, connectedUsers);
+        receiverSocket.emit('stop typing');
+      } catch (error) {
+
+      }
+    }
+  })
+  socket.on('disconnect', async () => {
+    try {
+      console.log('start remove my id ')
+      await removeElement(null, socket.id, availabeUsers);
+      await removeElement('id', socket.id, connectedUsers);
+
+    } catch (error) {
+      if (error) {
+        console.log(error)
+      }
+    }
+  })
+
+});
+
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}
